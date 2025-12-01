@@ -1,0 +1,17 @@
+[Unit]
+Description=Discord RPC Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+ExecStart=%h/.local/bin/discord-rpc-bridge
+
+Restart=always
+RestartSec=10
+
+SyslogIdentifier=discord-rpc-bridge
+
+[Install]
+WantedBy=default.target

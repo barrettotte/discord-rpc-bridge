@@ -17,11 +17,6 @@ import (
 	"time"
 )
 
-const (
-	CacheFile  = "data/games.json"
-	ConfigFile = "config.json"
-)
-
 var (
 	discordApiUrl = "https://discord.com/api/v10/applications/detectable"
 	scanInterval  = 5 * time.Second
@@ -91,10 +86,10 @@ func populateMap(apps []DetectableApp) {
 
 // load game JSON from cache or build cache from Discord API call
 func loadGameData() error {
-	// TODO: force refresh cache after a day
+	_, cacheFile := getPaths()
 
 	shouldUpdate := false
-	info, err := os.Stat((CacheFile))
+	info, err := os.Stat(cacheFile)
 
 	if os.IsNotExist(err) {
 		shouldUpdate = true // file not exist
@@ -118,14 +113,14 @@ func loadGameData() error {
 			if err := json.NewDecoder(resp.Body).Decode(&apps); err == nil {
 				// cache to disk
 				data, _ := json.Marshal(apps)
-				_ = os.WriteFile(CacheFile, data, 0644)
+				_ = os.WriteFile(cacheFile, data, 0644)
 				log.Println("Cache updated successfully.")
 			}
 		}
 	}
 
 	// load from disk
-	file, err := os.ReadFile(CacheFile)
+	file, err := os.ReadFile(cacheFile)
 	if err != nil {
 		return err
 	}
@@ -383,7 +378,9 @@ func setActivity(conn net.Conn, appName string, pid int, osRelease string) error
 
 // load configuration from JSON
 func loadConfig() {
-	file, err := os.ReadFile(ConfigFile)
+	configFile, _ := getPaths()
+
+	file, err := os.ReadFile(configFile)
 	if err != nil {
 		log.Println("No config.json found. Using defaults.")
 		return
@@ -418,6 +415,33 @@ func loadConfig() {
 		gameCacheTTL = time.Duration(cfg.GameCacheTTLDays*24) * time.Hour
 	}
 	log.Printf("Set game cache TTL to %d day(s)", cfg.GameCacheTTLDays)
+}
+
+// get path tuple of (config_file, cache_file)
+// looks at current working directory, then XDG system paths
+func getPaths() (string, string) {
+	appName := "discord-rpc-bridge"
+
+	// check for local config
+	cwd, _ := os.Getwd()
+	localConfig := filepath.Join(cwd, "config.json")
+	if _, err := os.Stat(localConfig); err == nil {
+		log.Println("MODE: Development (repo paths)")
+		return localConfig, filepath.Join(cwd, "data", "games.json")
+	}
+
+	// fallback to XDG
+	log.Println("MODE: Deployed (XDG paths)")
+
+	configDir, _ := os.UserConfigDir()
+	appConfigDir := filepath.Join(configDir, appName)
+	_ = os.MkdirAll(appConfigDir, 0755)
+
+	cacheDir, _ := os.UserCacheDir()
+	appCacheDir := filepath.Join(cacheDir, appName)
+	_ = os.MkdirAll(appCacheDir, 0755)
+
+	return filepath.Join(appConfigDir, "config.json"), filepath.Join(appCacheDir, "games.json")
 }
 
 func main() {

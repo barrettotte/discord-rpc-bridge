@@ -1,12 +1,14 @@
 # discord-rpc-bridge
 
-A bridge to update Discord status when using Flatpak applications.
+A bridge to update Discord status when using Flatpak Steam and Discord.
 
 I recently switched over to Linux and noticed that Flatpak Steam and Flatpak Discord have trouble communicating due to the Flatpak app sandboxing. 
 I tried to symlink the Discord socket and tweak Flatpak permissions, but gave up.
 It seems like this is due to Discord being sandboxed and not able to read `/proc` of the host.
 
 So this is a tiny bridge that scans `/proc` on an interval to set your Discord activity status to what you're playing on Steam.
+
+![assets/balatro-status.png](assets/balatro-status.png)
 
 ## Limitations
 

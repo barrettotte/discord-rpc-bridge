@@ -1,0 +1,18 @@
+{
+  "scan_interval_seconds": 15,
+	"discord_api_version": 10,
+	"ignored_games": [
+		"SteamLinuxRuntime_soldier",
+		"SteamLinuxRuntime_sniper",
+		"SteamLinuxRuntime",
+		"SteamControllerConfigs",
+		"Proton - Experimental",
+		"Proton Experimental",
+		"Proton 7.0",
+		"Proton 8.0",
+		"Proton 9.0",
+		"Proton Hotfix",
+		"shader_compiler",
+		"reaper"
+	]
+}

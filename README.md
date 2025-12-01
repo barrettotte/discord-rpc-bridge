@@ -10,4 +10,7 @@ So this is a tiny bridge to make it so Steam games show up in your Discord statu
 
 ## Setup
 
+## Limitations
 
+- This only works for Steam games, but could potentially scan for other apps (KiCad, VSCode, etc.)
+- I only tested with Rimworld, Balatro, and SHENZHEN IO on Fedora 43 Kinoite. But, it works for my use case so far.

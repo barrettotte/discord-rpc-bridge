@@ -18,21 +18,25 @@ import (
 )
 
 const (
-	APIUrl       = "https://discord.com/api/v10/applications/detectable"
-	CacheFile    = "data/games.json"
-	ScanInterval = 5 * time.Second
+	CacheFile  = "data/games.json"
+	ConfigFile = "config.json"
 )
 
-// folder names to ignore in steamapps/common
-var ignoredGames = map[string]bool{
-	"SteamLinuxRuntime_soldier": true,
-	"SteamLinuxRuntime_sniper":  true,
-	"SteamLinuxRuntime":         true,
-	"SteamControllerConfigs":    true,
-	"Proton Experimental":       true,
-	"Proton 7.0":                true,
-	"Proton 8.0":                true,
-	"Proton 9.0":                true,
+var (
+	discordApiUrl = "https://discord.com/api/v10/applications/detectable"
+	scanInterval  = 5 * time.Second
+	ignoredGames  = map[string]bool{
+		"SteamLinuxRuntime_soldier": true,
+		"SteamLinuxRuntime_sniper":  true,
+		"SteamLinuxRuntime":         true,
+	}
+	nameToID = make(map[string]string)
+)
+
+type Config struct {
+	ScanIntervalSeconds int      `json:"scan_interval_seconds"`
+	IgnoredGames        []string `json:"ignored_games"`
+	DiscordApiVersion   int      `json:"discord_api_version"`
 }
 
 type Executable struct {
@@ -75,8 +79,7 @@ type DiscordRpcPayload struct {
 	Args  interface{} `json:"args"`
 }
 
-var nameToID = make(map[string]string)
-
+// populate lookup for game client ID
 func populateMap(apps []DetectableApp) {
 	for _, app := range apps {
 		nameToID[normalizeGameName(app.Name)] = app.ID
@@ -84,6 +87,7 @@ func populateMap(apps []DetectableApp) {
 	log.Printf("Indexed %d known games.", len(nameToID))
 }
 
+// load game JSON from cache or build cache from Discord API call
 func loadGameData() error {
 	// TODO: force refresh cache after a day
 
@@ -91,7 +95,7 @@ func loadGameData() error {
 
 	if err != nil {
 		log.Println("Fetching games from Discord API...")
-		resp, err := http.Get(APIUrl)
+		resp, err := http.Get(discordApiUrl)
 
 		if err != nil {
 			return err
@@ -121,6 +125,7 @@ func loadGameData() error {
 	return nil
 }
 
+// get path to Discord IPC socket
 func findDiscordSocket() (string, error) {
 	uid := os.Getuid()
 	candidates := []string{
@@ -137,6 +142,7 @@ func findDiscordSocket() (string, error) {
 	return "", fmt.Errorf("discord socket not found")
 }
 
+// parse and log the Discord IPC response
 func readIpcResponse(conn net.Conn) {
 	// read header (8 bytes)
 	header := make([]byte, 8)
@@ -159,6 +165,7 @@ func readIpcResponse(conn net.Conn) {
 	log.Printf("Discord response: %s", string(payload))
 }
 
+// send IPC packet to Discord IPC socket
 func sendIPCPacket(conn net.Conn, opcode int, payload []byte) error {
 	buf := new(bytes.Buffer)
 
@@ -178,19 +185,22 @@ func sendIPCPacket(conn net.Conn, opcode int, payload []byte) error {
 	return err
 }
 
+// fixup the raw Steam folder name to match Discord's JSON entries
 func normalizeGameName(input string) string {
 	reg := regexp.MustCompile(`[^a-z0-9]`)
 	return reg.ReplaceAllString(strings.ToLower(input), "")
 }
 
+// find Discord client ID of provided game
 func resolveClientID(name string) string {
 	norm := normalizeGameName(name)
 	if id, ok := nameToID[norm]; ok {
 		return id
 	}
-	return "000000000000000000" // does not seem to work
+	return "000000000000000000" // default, but will not work (handshake fail)
 }
 
+// connect to Discord IPC socket as clientID
 func connectIPC(path string, clientID string) (net.Conn, error) {
 	conn, err := net.Dial("unix", path)
 	if err != nil {
@@ -214,6 +224,7 @@ func connectIPC(path string, clientID string) (net.Conn, error) {
 	return conn, nil
 }
 
+// given path with steamapps/common, extract the steam game folder name
 func extractSteamGameName(fullPath string) string {
 	const key = "steamapps/common"
 	idx := strings.Index(fullPath, key)
@@ -233,6 +244,30 @@ func extractSteamGameName(fullPath string) string {
 	return ""
 }
 
+// try to find the game name from the processe's cmdline args (for proton games)
+func scanCmdline(pidStr string) string {
+	// /proc/<pid>/cmdline args separated by null bytes (\0)
+	data, err := os.ReadFile(filepath.Join("/proc", pidStr, "cmdline"))
+	if err != nil {
+		return ""
+	}
+
+	args := bytes.Split(data, []byte{0})
+	for _, arg := range args {
+		if len(arg) == 0 {
+			continue
+		}
+		path := string(arg)
+		name := extractSteamGameName(path)
+
+		if name != "" && !ignoredGames[name] {
+			return name
+		}
+	}
+	return ""
+}
+
+// scan active processes of current user for active games
 func scanProcesses() (string, int) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -249,12 +284,19 @@ func scanProcesses() (string, int) {
 			continue
 		}
 
+		// check symlink for native Steam games
 		exePath, err := os.Readlink(filepath.Join("/proc", pidStr, "exe")) // /proc/<pid>/exe
-		if err != nil {
-			continue
+		if err == nil {
+			name := extractSteamGameName(exePath)
+			if name != "" && !ignoredGames[name] {
+				var pid int
+				fmt.Sscanf(pidStr, "%d", &pid)
+				return name, pid
+			}
 		}
 
-		name := extractSteamGameName(exePath)
+		// fallback: check command line args (for proton games)
+		name := scanCmdline(pidStr)
 		if name != "" && !ignoredGames[name] {
 			var pid int
 			fmt.Sscanf(pidStr, "%d", &pid)
@@ -264,10 +306,11 @@ func scanProcesses() (string, int) {
 	return "", 0
 }
 
+// read /etc/os-release to display in the Discord status
 func readOSRelease() string {
 	file, err := os.Open("/etc/os-release")
 	if err != nil {
-		fmt.Printf("ERROR: Could not open /etc/os-release: %v", err)
+		log.Printf("ERROR: Could not open /etc/os-release: %v", err)
 		return runtime.GOOS
 	}
 
@@ -285,7 +328,7 @@ func readOSRelease() string {
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Printf("Error reading /etc/os-release: %v", err)
+		log.Printf("Error reading /etc/os-release: %v", err)
 		return runtime.GOOS
 	}
 
@@ -297,6 +340,7 @@ func readOSRelease() string {
 	return runtime.GOOS
 }
 
+// send the IPC packet to Discord to update your activity
 func setActivity(conn net.Conn, appName string, pid int, osRelease string) error {
 	var activity Activity = Activity{}
 
@@ -315,29 +359,65 @@ func setActivity(conn net.Conn, appName string, pid int, osRelease string) error
 		Cmd:   "SET_ACTIVITY",
 		Nonce: fmt.Sprintf("%d", time.Now().UnixNano()),
 		Args: ActivityArgs{
-			Pid:      os.Getpid(),
+			Pid:      pid,
 			Activity: activity,
 		},
 	}
-
 	data, _ := json.Marshal(payload)
 	return sendIPCPacket(conn, 1, data) // opcode 1 = frame
+}
+
+// load configuration from JSON
+func loadConfig() {
+	file, err := os.ReadFile(ConfigFile)
+	if err != nil {
+		log.Println("No config.json found. Using defaults.")
+		return
+	}
+
+	var cfg Config
+	if err := json.Unmarshal(file, &cfg); err != nil {
+		log.Printf("Error parsing config.json: %v. Using defaults.", err)
+		return
+	}
+
+	// set interval
+	if cfg.ScanIntervalSeconds > 0 {
+		scanInterval = time.Duration(cfg.ScanIntervalSeconds) * time.Second
+	}
+	log.Printf("Scan interval set to %d second(s).", cfg.ScanIntervalSeconds)
+
+	// merge ignored games
+	for _, name := range cfg.IgnoredGames {
+		ignoredGames[name] = true
+	}
+	log.Printf("Loaded %d ignored entries.", len(ignoredGames))
+
+	// set Discord API version in URL
+	if cfg.DiscordApiVersion > 0 {
+		discordApiUrl = fmt.Sprintf("https://discord.com/api/v%d/applications/detectable", cfg.DiscordApiVersion)
+	}
+	log.Printf("Using Discord API URL: %s", discordApiUrl)
 }
 
 func main() {
 	log.Println("Starting discord-rpc-bridge...")
 
+	loadConfig()
+
 	if err := loadGameData(); err != nil {
 		log.Fatalf("Failed to load database: %v", err)
 	}
 	osRelease := readOSRelease()
+	log.Printf("Detected OS release: %s", osRelease)
 
-	ticker := time.NewTicker(ScanInterval)
+	ticker := time.NewTicker(scanInterval)
 	var socketPath, _ = findDiscordSocket()
 	var currentClientID string
 	var ipcConn net.Conn
 
 	// run on schedule
+	log.Printf("Starting process scanner with interval of %v second(s)", scanInterval.Seconds())
 	for range ticker.C {
 		gameName, pid := scanProcesses()
 

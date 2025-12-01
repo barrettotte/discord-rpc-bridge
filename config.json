@@ -1,6 +1,7 @@
 {
   "scan_interval_seconds": 15,
 	"discord_api_version": 10,
+	"game_cache_ttl_days": 7,
 	"ignored_games": [
 		"SteamLinuxRuntime_soldier",
 		"SteamLinuxRuntime_sniper",

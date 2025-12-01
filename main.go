@@ -25,6 +25,7 @@ const (
 var (
 	discordApiUrl = "https://discord.com/api/v10/applications/detectable"
 	scanInterval  = 5 * time.Second
+	gameCacheTTL  = 7 * 24 * time.Hour
 	ignoredGames  = map[string]bool{
 		"SteamLinuxRuntime_soldier": true,
 		"SteamLinuxRuntime_sniper":  true,
@@ -37,6 +38,7 @@ type Config struct {
 	ScanIntervalSeconds int      `json:"scan_interval_seconds"`
 	IgnoredGames        []string `json:"ignored_games"`
 	DiscordApiVersion   int      `json:"discord_api_version"`
+	GameCacheTTLDays    int      `json:"game_cache_ttl_days"`
 }
 
 type Executable struct {
@@ -91,36 +93,48 @@ func populateMap(apps []DetectableApp) {
 func loadGameData() error {
 	// TODO: force refresh cache after a day
 
-	file, err := os.ReadFile(CacheFile)
+	shouldUpdate := false
+	info, err := os.Stat((CacheFile))
 
-	if err != nil {
-		log.Println("Fetching games from Discord API...")
+	if os.IsNotExist(err) {
+		shouldUpdate = true // file not exist
+	} else if err == nil {
+		// file exists, check if stale
+		if time.Since(info.ModTime()) > gameCacheTTL {
+			log.Println("Game list cache expired. Refreshing...")
+			shouldUpdate = true
+		}
+	}
+
+	if shouldUpdate {
+		log.Println("Downloading game list from Discord...")
 		resp, err := http.Get(discordApiUrl)
 
 		if err != nil {
-			return err
+			log.Printf("Download failed: %v. Using cached version if found.", err)
+		} else {
+			defer resp.Body.Close()
+			var apps []DetectableApp
+			if err := json.NewDecoder(resp.Body).Decode(&apps); err == nil {
+				// cache to disk
+				data, _ := json.Marshal(apps)
+				_ = os.WriteFile(CacheFile, data, 0644)
+				log.Println("Cache updated successfully.")
+			}
 		}
-		defer resp.Body.Close()
-
-		var apps []DetectableApp
-		if err := json.NewDecoder(resp.Body).Decode(&apps); err != nil {
-			return err
-		}
-
-		// cache data
-		data, _ := json.Marshal(apps)
-		os.WriteFile(CacheFile, data, 0644)
-
-		// build map
-		populateMap(apps)
-		return nil
 	}
 
-	// read from cache
+	// load from disk
+	file, err := os.ReadFile(CacheFile)
+	if err != nil {
+		return err
+	}
+
 	var apps []DetectableApp
 	if err := json.Unmarshal(file, &apps); err != nil {
 		return err
 	}
+
 	populateMap(apps)
 	return nil
 }
@@ -398,6 +412,12 @@ func loadConfig() {
 		discordApiUrl = fmt.Sprintf("https://discord.com/api/v%d/applications/detectable", cfg.DiscordApiVersion)
 	}
 	log.Printf("Using Discord API URL: %s", discordApiUrl)
+
+	// set game data cache TTL
+	if cfg.GameCacheTTLDays > 0 {
+		gameCacheTTL = time.Duration(cfg.GameCacheTTLDays*24) * time.Hour
+	}
+	log.Printf("Set game cache TTL to %d day(s)", cfg.GameCacheTTLDays)
 }
 
 func main() {

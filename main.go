@@ -15,6 +15,11 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
+
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
 )
 
 var (
@@ -196,8 +201,13 @@ func sendIPCPacket(conn net.Conn, opcode int, payload []byte) error {
 
 // fixup the raw Steam folder name to match Discord's JSON entries
 func normalizeGameName(input string) string {
+
+	// transliterate accents/umlauts (ex: Ragnarök -> Ragnarok)
+	t := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
+	s, _, _ := transform.String(t, input)
+
 	reg := regexp.MustCompile(`[^a-z0-9]`)
-	return reg.ReplaceAllString(strings.ToLower(input), "")
+	return reg.ReplaceAllString(strings.ToLower(s), "")
 }
 
 // find Discord client ID of provided game
@@ -235,6 +245,8 @@ func connectIPC(path string, clientID string) (net.Conn, error) {
 
 // given path with steamapps/common, extract the steam game folder name
 func extractSteamGameName(fullPath string) string {
+	fullPath = strings.ReplaceAll(fullPath, "\\", "/")
+
 	const key = "steamapps/common"
 	idx := strings.Index(fullPath, key)
 	if idx == -1 {
@@ -243,10 +255,10 @@ func extractSteamGameName(fullPath string) string {
 
 	// strip everything before game name
 	name := fullPath[idx+len(key):]
-	name = strings.TrimPrefix(name, string(filepath.Separator))
+	name = strings.TrimPrefix(name, "/")
 
 	// extract first directory component
-	parts := strings.SplitN(name, string(filepath.Separator), 2)
+	parts := strings.SplitN(name, "/", 2)
 	if len(parts) > 0 {
 		return parts[0]
 	}

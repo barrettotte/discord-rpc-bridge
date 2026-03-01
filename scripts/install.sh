@@ -5,7 +5,7 @@
 set -ex
 
 APP_NAME="discord-rpc-bridge"
-CONFIG_HOME="$HOME/.config"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 BIN_HOME="$HOME/.local/bin"
 
 echo "Installing $APP_NAME as systemd service..."

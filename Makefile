@@ -4,11 +4,10 @@ build:	clean
 	go build -o bin/$(APP_NAME) main.go
 
 run:	build
-	go run main.go
+	./bin/$(APP_NAME)
 
 clean:
 	rm -f bin/$(APP_NAME)
-	rm -f data/games.json
 
 install:
 	bash scripts/install.sh

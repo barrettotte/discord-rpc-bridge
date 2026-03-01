@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -31,7 +33,10 @@ var (
 		"SteamLinuxRuntime_sniper":  true,
 		"SteamLinuxRuntime":         true,
 	}
-	nameToID = make(map[string]string)
+	nameToID          = make(map[string]string)
+	nonAlphanumeric   = regexp.MustCompile(`[^a-z0-9]`)
+	httpClient        = &http.Client{Timeout: 30 * time.Second}
+	accentTransformer = transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
 )
 
 type Config struct {
@@ -108,7 +113,7 @@ func loadGameData() error {
 
 	if shouldUpdate {
 		log.Println("Downloading game list from Discord...")
-		resp, err := http.Get(discordApiUrl)
+		resp, err := httpClient.Get(discordApiUrl)
 
 		if err != nil {
 			log.Printf("Download failed: %v. Using cached version if found.", err)
@@ -158,9 +163,12 @@ func findDiscordSocket() (string, error) {
 
 // parse and log the Discord IPC response
 func readIpcResponse(conn net.Conn) {
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	defer conn.SetReadDeadline(time.Time{}) // clear deadline after read
+
 	// read header (8 bytes)
 	header := make([]byte, 8)
-	_, err := conn.Read(header)
+	_, err := io.ReadFull(conn, header)
 	if err != nil {
 		log.Printf("ERROR: Failed to read header: %v", err)
 		return
@@ -171,7 +179,7 @@ func readIpcResponse(conn net.Conn) {
 
 	// read the payload
 	payload := make([]byte, dataLen)
-	_, err = conn.Read(payload)
+	_, err = io.ReadFull(conn, payload)
 	if err != nil {
 		log.Printf("ERROR: Failed to read payload: %v", err)
 		return
@@ -203,11 +211,9 @@ func sendIPCPacket(conn net.Conn, opcode int, payload []byte) error {
 func normalizeGameName(input string) string {
 
 	// transliterate accents/umlauts (ex: Ragnarök -> Ragnarok)
-	t := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
-	s, _, _ := transform.String(t, input)
+	s, _, _ := transform.String(accentTransformer, input)
 
-	reg := regexp.MustCompile(`[^a-z0-9]`)
-	return reg.ReplaceAllString(strings.ToLower(s), "")
+	return nonAlphanumeric.ReplaceAllString(strings.ToLower(s), "")
 }
 
 // find Discord client ID of provided game
@@ -306,22 +312,20 @@ func scanProcesses() (string, int) {
 		}
 
 		// check symlink for native Steam games
+		var gameName string
 		exePath, err := os.Readlink(filepath.Join("/proc", pidStr, "exe")) // /proc/<pid>/exe
 		if err == nil {
-			name := extractSteamGameName(exePath)
-			if name != "" && !ignoredGames[name] {
-				var pid int
-				fmt.Sscanf(pidStr, "%d", &pid)
-				return name, pid
-			}
+			gameName = extractSteamGameName(exePath)
 		}
 
 		// fallback: check command line args (for proton games)
-		name := scanCmdline(pidStr)
-		if name != "" && !ignoredGames[name] {
-			var pid int
-			fmt.Sscanf(pidStr, "%d", &pid)
-			return name, pid
+		if gameName == "" {
+			gameName = scanCmdline(pidStr)
+		}
+
+		if gameName != "" && !ignoredGames[gameName] {
+			pid, _ := strconv.Atoi(pidStr)
+			return gameName, pid
 		}
 	}
 	return "", 0
@@ -334,6 +338,7 @@ func readOSRelease() string {
 		log.Printf("ERROR: Could not open /etc/os-release: %v", err)
 		return runtime.GOOS
 	}
+	defer file.Close()
 
 	distroInfo := make(map[string]string)
 	scanner := bufio.NewScanner(file)
@@ -363,7 +368,7 @@ func readOSRelease() string {
 
 // send the IPC packet to Discord to update your activity
 func setActivity(conn net.Conn, appName string, pid int, osRelease string) error {
-	var activity Activity = Activity{}
+	activity := Activity{}
 
 	if appName != "" {
 		state := fmt.Sprintf("On %s", osRelease)
@@ -408,7 +413,7 @@ func loadConfig() {
 	if cfg.ScanIntervalSeconds > 0 {
 		scanInterval = time.Duration(cfg.ScanIntervalSeconds) * time.Second
 	}
-	log.Printf("Scan interval set to %d second(s).", cfg.ScanIntervalSeconds)
+	log.Printf("Scan interval set to %v.", scanInterval)
 
 	// merge ignored games
 	for _, name := range cfg.IgnoredGames {
@@ -426,12 +431,18 @@ func loadConfig() {
 	if cfg.GameCacheTTLDays > 0 {
 		gameCacheTTL = time.Duration(cfg.GameCacheTTLDays*24) * time.Hour
 	}
-	log.Printf("Set game cache TTL to %d day(s)", cfg.GameCacheTTLDays)
+	log.Printf("Game cache TTL set to %v.", gameCacheTTL)
 }
 
 // get path tuple of (config_file, cache_file)
 // looks at current working directory, then XDG system paths
+var cachedPaths [2]string
+
 func getPaths() (string, string) {
+	if cachedPaths[0] != "" {
+		return cachedPaths[0], cachedPaths[1]
+	}
+
 	appName := "discord-rpc-bridge"
 
 	// check for local config
@@ -439,7 +450,8 @@ func getPaths() (string, string) {
 	localConfig := filepath.Join(cwd, "config.json")
 	if _, err := os.Stat(localConfig); err == nil {
 		log.Println("MODE: Development (repo paths)")
-		return localConfig, filepath.Join(cwd, "data", "games.json")
+		cachedPaths = [2]string{localConfig, filepath.Join(cwd, "data", "games.json")}
+		return cachedPaths[0], cachedPaths[1]
 	}
 
 	// fallback to XDG
@@ -453,7 +465,8 @@ func getPaths() (string, string) {
 	appCacheDir := filepath.Join(cacheDir, appName)
 	_ = os.MkdirAll(appCacheDir, 0755)
 
-	return filepath.Join(appConfigDir, "config.json"), filepath.Join(appCacheDir, "games.json")
+	cachedPaths = [2]string{filepath.Join(appConfigDir, "config.json"), filepath.Join(appCacheDir, "games.json")}
+	return cachedPaths[0], cachedPaths[1]
 }
 
 func main() {
@@ -472,9 +485,9 @@ func main() {
 	var currentClientID string
 	var ipcConn net.Conn
 
-	// run on schedule
+	// run immediately, then on schedule
 	log.Printf("Starting process scanner with interval of %v second(s)", scanInterval.Seconds())
-	for range ticker.C {
+	scan := func() {
 		gameName, pid := scanProcesses()
 
 		if gameName == "" {
@@ -485,11 +498,11 @@ func main() {
 				ipcConn = nil
 				currentClientID = ""
 			}
-			continue
+			return
 		}
 		targetClientID := resolveClientID(gameName)
 
-		// if connected, bt ID wrong, disconnect
+		// if connected, but ID wrong, disconnect
 		if ipcConn != nil && currentClientID != targetClientID {
 			log.Printf("Switching games (%s -> %s). Reconnecting...", currentClientID, targetClientID)
 			ipcConn.Close()
@@ -509,14 +522,24 @@ func main() {
 					log.Printf("Connected to game %s (ID: %s)", gameName, targetClientID)
 				} else {
 					log.Printf("Connection failed: %v", err)
-					continue
+					return
 				}
 			}
 		}
 
 		// set activity if connected
 		if ipcConn != nil {
-			setActivity(ipcConn, gameName, pid, osRelease)
+			if err := setActivity(ipcConn, gameName, pid, osRelease); err != nil {
+				log.Printf("Failed to set activity: %v. Reconnecting...", err)
+				ipcConn.Close()
+				ipcConn = nil
+				currentClientID = ""
+			}
 		}
+	}
+
+	scan()
+	for range ticker.C {
+		scan()
 	}
 }

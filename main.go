@@ -24,6 +24,8 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
+var version = "dev"
+
 var (
 	discordApiUrl = "https://discord.com/api/v10/applications/detectable"
 	scanInterval  = 5 * time.Second
@@ -249,7 +251,8 @@ func connectIPC(path string, clientID string) (net.Conn, error) {
 	return conn, nil
 }
 
-// given path with steamapps/common, extract the steam game folder name
+// given path with steamapps/common, extract the steam game folder name.
+// works for both native and flatpak steam installations
 func extractSteamGameName(fullPath string) string {
 	fullPath = strings.ReplaceAll(fullPath, "\\", "/")
 
@@ -271,7 +274,7 @@ func extractSteamGameName(fullPath string) string {
 	return ""
 }
 
-// try to find the game name from the processe's cmdline args (for proton games)
+// try to find the game name from the process's cmdline args (for proton games)
 func scanCmdline(pidStr string) string {
 	// /proc/<pid>/cmdline args separated by null bytes (\0)
 	data, err := os.ReadFile(filepath.Join("/proc", pidStr, "cmdline"))
@@ -470,7 +473,7 @@ func getPaths() (string, string) {
 }
 
 func main() {
-	log.Println("Starting discord-rpc-bridge...")
+	log.Printf("Starting discord-rpc-bridge %s...", version)
 
 	loadConfig()
 

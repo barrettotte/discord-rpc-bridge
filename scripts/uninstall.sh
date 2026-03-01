@@ -5,9 +5,9 @@
 set -x
 
 APP_NAME="discord-rpc-bridge"
-CONFIG_HOME="$HOME/.config"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 BIN_HOME="$HOME/.local/bin"
-CACHE_HOME="$HOME/.cache"
+CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
 
 echo "Uninstalling $APP_NAME systemd service..."
 echo "Config Home: $CONFIG_HOME"

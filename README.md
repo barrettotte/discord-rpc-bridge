@@ -1,32 +1,39 @@
 # discord-rpc-bridge
 
-A bridge to update Discord status when using Flatpak Steam and Discord.
+A bridge to update Discord Rich Presence status with your current Steam game on Linux.
 
-I recently switched over to Linux and noticed that Flatpak Steam and Flatpak Discord have trouble communicating due to the Flatpak app sandboxing. 
-I tried to symlink the Discord socket and tweak Flatpak permissions, but gave up.
-It seems like this is due to Discord being sandboxed and not able to read `/proc` of the host.
-
-So this is a tiny bridge that scans `/proc` on an interval to set your Discord activity status to what you're playing on Steam.
+This works with both native and Flatpak Steam, and supports native, Flatpak, and Snap Discord.
+It scans `/proc` on an interval to detect running Steam games (native and Proton) and sets your Discord activity status via IPC.
 
 ![assets/balatro-status.png](assets/balatro-status.png)
 
 ## Limitations
 
-- systemd only
-- This "should" support both native and proton-enabled games. but this was a Sunday project so I definitely missed things.
-  - I only tested with Rimworld, Balatro, and SHENZHEN IO on Fedora 43 Kinoite. But, it works for my use case so far.
-- The activity status is missing all the fancy stuff and instead sets the activity details to your distro.
-- This only works for Steam games, but could potentially scan for other processes (KiCad, VSCode, Neovim, etc.)
-- This doesn't work for multiple games. Maybe there's a way to smartly determine "focus", but I'm not doing that right now.
+- Linux only, systemd only
+- Supports both native and Proton games. Game detection works by matching `steamapps/common` in process paths.
+- Only detects Steam games. Could potentially scan for other processes (KiCad, VSCode, Neovim, etc.)
+- Only tracks one game at a time (first match in `/proc`).
+- Activity status shows your distro name instead of game-specific rich presence assets.
 
 ## Installation
 
+Download the latest release and install as a systemd service:
+
 ```sh
-# install as systemd service
+curl -fsSL https://raw.githubusercontent.com/barrettotte/discord-rpc-bridge/master/scripts/download.sh | bash
+```
+
+### Build from source
+
+```sh
 git clone https://github.com/barrettotte/discord-rpc-bridge && cd discord-rpc-bridge
 make build
 make install
+```
 
+### Verify / Logs / Uninstall
+
+```sh
 # verify
 systemctl --user status discord-rpc-bridge
 

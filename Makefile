@@ -1,10 +1,13 @@
 APP_NAME = discord-rpc-bridge
 
 build:	clean
-	go build -o bin/$(APP_NAME) main.go
+	go build -ldflags "-X main.version=dev" -o bin/$(APP_NAME) main.go
 
 run:	build
 	./bin/$(APP_NAME)
+
+test:
+	go test ./...
 
 clean:
 	rm -f bin/$(APP_NAME)

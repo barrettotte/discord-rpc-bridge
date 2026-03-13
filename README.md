@@ -31,6 +31,15 @@ make build
 make install
 ```
 
+### Updating
+
+Re-run the install script. This will stop the service, update the binary, and overwrite the config with defaults.
+
+```sh
+systemctl --user stop discord-rpc-bridge
+curl -fsSL https://raw.githubusercontent.com/barrettotte/discord-rpc-bridge/master/scripts/download.sh | bash
+```
+
 ### Verify / Logs / Uninstall
 
 ```sh

@@ -13,6 +13,12 @@ SERVICE_DIR="$CONFIG_HOME/systemd/user"
 
 echo "Installing $APP_NAME..."
 
+# stop existing service before overwriting binary
+if systemctl --user is-active --quiet "$APP_NAME.service" 2>/dev/null; then
+  echo "Stopping running service..."
+  systemctl --user stop "$APP_NAME.service"
+fi
+
 # get latest release tag
 TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
 if [ -z "$TAG" ]; then
@@ -32,12 +38,10 @@ mkdir -p "$SERVICE_DIR"
 echo "Downloading service file..."
 curl -fsSL "https://raw.githubusercontent.com/$REPO/master/$APP_NAME.service" -o "$SERVICE_DIR/$APP_NAME.service"
 
-# download default config if one doesn't exist
+# always sync config from repo
 mkdir -p "$CONFIG_DIR"
-if [ ! -f "$CONFIG_DIR/config.json" ]; then
-  echo "Downloading default config..."
-  curl -fsSL "https://raw.githubusercontent.com/$REPO/master/config.json" -o "$CONFIG_DIR/config.json"
-fi
+echo "Downloading config..."
+curl -fsSL "https://raw.githubusercontent.com/$REPO/master/config.json" -o "$CONFIG_DIR/config.json"
 
 # enable and start the service
 systemctl --user daemon-reload

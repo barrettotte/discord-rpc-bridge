@@ -1,5 +1,5 @@
 {
-  "scan_interval_seconds": 15,
+	"scan_interval_seconds": 15,
 	"discord_api_version": 10,
 	"game_cache_ttl_days": 7,
 	"ignored_games": [
@@ -13,7 +13,12 @@
 		"Proton 8.0",
 		"Proton 9.0",
 		"Proton Hotfix",
-		"shader_compiler",
-		"reaper"
+		"shader_compiler"
+	],
+	"ignored_processes": [
+		"gamescopereaper",
+		"reaper",
+		"steam-launch-wrapper",
+		"pressure-vessel-wrap"
 	]
 }

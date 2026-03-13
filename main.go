@@ -30,10 +30,16 @@ var (
 	discordApiUrl = "https://discord.com/api/v10/applications/detectable"
 	scanInterval  = 5 * time.Second
 	gameCacheTTL  = 7 * 24 * time.Hour
-	ignoredGames  = map[string]bool{
+	ignoredGames = map[string]bool{
 		"SteamLinuxRuntime_soldier": true,
 		"SteamLinuxRuntime_sniper":  true,
 		"SteamLinuxRuntime":         true,
+	}
+	ignoredProcesses = map[string]bool{
+		"gamescopereaper":      true,
+		"reaper":               true,
+		"steam-launch-wrapper": true,
+		"pressure-vessel-wrap": true,
 	}
 	nameToID          = make(map[string]string)
 	nonAlphanumeric   = regexp.MustCompile(`[^a-z0-9]`)
@@ -44,6 +50,7 @@ var (
 type Config struct {
 	ScanIntervalSeconds int      `json:"scan_interval_seconds"`
 	IgnoredGames        []string `json:"ignored_games"`
+	IgnoredProcesses    []string `json:"ignored_processes"`
 	DiscordApiVersion   int      `json:"discord_api_version"`
 	GameCacheTTLDays    int      `json:"game_cache_ttl_days"`
 }
@@ -318,6 +325,10 @@ func scanProcesses() (string, int) {
 		var gameName string
 		exePath, err := os.Readlink(filepath.Join("/proc", pidStr, "exe")) // /proc/<pid>/exe
 		if err == nil {
+			// skip wrapper/launcher processes that carry game paths in their cmdline
+			if ignoredProcesses[filepath.Base(exePath)] {
+				continue
+			}
 			gameName = extractSteamGameName(exePath)
 		}
 
@@ -422,7 +433,13 @@ func loadConfig() {
 	for _, name := range cfg.IgnoredGames {
 		ignoredGames[name] = true
 	}
-	log.Printf("Loaded %d ignored entries.", len(ignoredGames))
+	log.Printf("Loaded %d ignored game entries.", len(ignoredGames))
+
+	// merge ignored processes
+	for _, name := range cfg.IgnoredProcesses {
+		ignoredProcesses[name] = true
+	}
+	log.Printf("Loaded %d ignored process entries.", len(ignoredProcesses))
 
 	// set Discord API version in URL
 	if cfg.DiscordApiVersion > 0 {

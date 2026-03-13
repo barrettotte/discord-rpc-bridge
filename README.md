@@ -57,8 +57,8 @@ make uninstall
 
   // how often to invalidate the Discord game list cache
   "game_cache_ttl_days": 7,
-  
-  // game names to ignore that have steamapps/common in path.
+
+  // steamapps/common folder names to ignore during game detection
   "ignored_games": [
     "SteamLinuxRuntime_soldier",
     "SteamLinuxRuntime_sniper",
@@ -70,8 +70,17 @@ make uninstall
     "Proton 8.0",
     "Proton 9.0",
     "Proton Hotfix",
-    "shader_compiler",
-    "reaper"
+    "shader_compiler"
+  ],
+
+  // process exe basenames to skip entirely during /proc scanning.
+  // prevents Steam launcher/wrapper processes from false-detecting games
+  // via their command line arguments.
+  "ignored_processes": [
+    "gamescopereaper",
+    "reaper",
+    "steam-launch-wrapper",
+    "pressure-vessel-wrap"
   ]
 }
 ```

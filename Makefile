@@ -9,6 +9,13 @@ run:	build
 test:
 	go test ./...
 
+lint:
+	gofmt -l .
+	go vet ./...
+
+fmt:
+	gofmt -w .
+
 clean:
 	rm -f bin/$(APP_NAME)
 

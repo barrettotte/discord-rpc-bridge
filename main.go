@@ -30,7 +30,7 @@ var (
 	discordApiUrl = "https://discord.com/api/v10/applications/detectable"
 	scanInterval  = 5 * time.Second
 	gameCacheTTL  = 7 * 24 * time.Hour
-	ignoredGames = map[string]bool{
+	ignoredGames  = map[string]bool{
 		"SteamLinuxRuntime_soldier": true,
 		"SteamLinuxRuntime_sniper":  true,
 		"SteamLinuxRuntime":         true,

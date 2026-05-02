@@ -38,10 +38,17 @@ mkdir -p "$SERVICE_DIR"
 echo "Downloading service file..."
 curl -fsSL "https://raw.githubusercontent.com/$REPO/master/$APP_NAME.service" -o "$SERVICE_DIR/$APP_NAME.service"
 
-# always sync config from repo
+# only seed config.json on first install. preserves user customizations
+# (manual_mappings, ignored_games) and avoids clobbering symlinked configs
+# managed by dotfiles repos.
 mkdir -p "$CONFIG_DIR"
-echo "Downloading config..."
-curl -fsSL "https://raw.githubusercontent.com/$REPO/master/config.json" -o "$CONFIG_DIR/config.json"
+DEST_CONFIG="$CONFIG_DIR/config.json"
+if [ -e "$DEST_CONFIG" ] || [ -L "$DEST_CONFIG" ]; then
+  echo "Existing config preserved at $DEST_CONFIG"
+else
+  echo "Downloading default config..."
+  curl -fsSL "https://raw.githubusercontent.com/$REPO/master/config.json" -o "$DEST_CONFIG"
+fi
 
 # enable and start the service
 systemctl --user daemon-reload

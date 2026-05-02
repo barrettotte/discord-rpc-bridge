@@ -3,19 +3,23 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -28,19 +32,19 @@ var version = "dev"
 
 var (
 	discordApiUrl = "https://discord.com/api/v10/applications/detectable"
-	scanInterval  = 5 * time.Second
+	scanInterval  = 15 * time.Second
 	gameCacheTTL  = 7 * 24 * time.Hour
-	ignoredGames  = map[string]bool{
-		"SteamLinuxRuntime_soldier": true,
-		"SteamLinuxRuntime_sniper":  true,
-		"SteamLinuxRuntime":         true,
-	}
-	ignoredProcesses = map[string]bool{
+	ignoredGames  = map[string]bool{}
+	// folder-name prefixes that are always Steam infrastructure, not games.
+	// covers SteamLinuxRuntime{,_soldier,_sniper,_4,...} and Proton {7,8,9,Experimental,Hotfix,...}
+	ignoredGamePrefixes = []string{"SteamLinuxRuntime", "Proton"}
+	ignoredProcesses    = map[string]bool{
 		"gamescopereaper":      true,
 		"reaper":               true,
 		"steam-launch-wrapper": true,
 		"pressure-vessel-wrap": true,
 	}
+	manualMappings    = map[string]string{}
 	nameToID          = make(map[string]string)
 	nonAlphanumeric   = regexp.MustCompile(`[^a-z0-9]`)
 	httpClient        = &http.Client{Timeout: 30 * time.Second}
@@ -48,11 +52,12 @@ var (
 )
 
 type Config struct {
-	ScanIntervalSeconds int      `json:"scan_interval_seconds"`
-	IgnoredGames        []string `json:"ignored_games"`
-	IgnoredProcesses    []string `json:"ignored_processes"`
-	DiscordApiVersion   int      `json:"discord_api_version"`
-	GameCacheTTLDays    int      `json:"game_cache_ttl_days"`
+	ScanIntervalSeconds int               `json:"scan_interval_seconds"`
+	IgnoredGames        []string          `json:"ignored_games"`
+	IgnoredProcesses    []string          `json:"ignored_processes"`
+	DiscordApiVersion   int               `json:"discord_api_version"`
+	GameCacheTTLDays    int               `json:"game_cache_ttl_days"`
+	ManualMappings      map[string]string `json:"manual_mappings"`
 }
 
 type Executable struct {
@@ -104,9 +109,7 @@ func populateMap(apps []DetectableApp) {
 }
 
 // load game JSON from cache or build cache from Discord API call
-func loadGameData() error {
-	_, cacheFile := getPaths()
-
+func loadGameData(cacheFile string) error {
 	shouldUpdate := false
 	info, err := os.Stat(cacheFile)
 
@@ -121,20 +124,8 @@ func loadGameData() error {
 	}
 
 	if shouldUpdate {
-		log.Println("Downloading game list from Discord...")
-		resp, err := httpClient.Get(discordApiUrl)
-
-		if err != nil {
-			log.Printf("Download failed: %v. Using cached version if found.", err)
-		} else {
-			defer resp.Body.Close()
-			var apps []DetectableApp
-			if err := json.NewDecoder(resp.Body).Decode(&apps); err == nil {
-				// cache to disk
-				data, _ := json.Marshal(apps)
-				_ = os.WriteFile(cacheFile, data, 0644)
-				log.Println("Cache updated successfully.")
-			}
+		if err := refreshGameCache(cacheFile); err != nil {
+			log.Printf("Cache refresh failed: %v. Using existing cache if present.", err)
 		}
 	}
 
@@ -150,6 +141,40 @@ func loadGameData() error {
 	}
 
 	populateMap(apps)
+	return nil
+}
+
+// download a fresh game list from Discord and write it to cacheFile.
+// validates HTTP status and a non-empty list before overwriting any
+// existing cache, to avoid poisoning it with an error response body.
+func refreshGameCache(cacheFile string) error {
+	log.Println("Downloading game list from Discord...")
+	resp, err := httpClient.Get(discordApiUrl)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status %d from %s", resp.StatusCode, discordApiUrl)
+	}
+
+	var apps []DetectableApp
+	if err := json.NewDecoder(resp.Body).Decode(&apps); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	if len(apps) == 0 {
+		return fmt.Errorf("response contained zero apps; refusing to overwrite cache")
+	}
+
+	data, err := json.Marshal(apps)
+	if err != nil {
+		return fmt.Errorf("re-marshal apps: %w", err)
+	}
+	if err := os.WriteFile(cacheFile, data, 0644); err != nil {
+		return fmt.Errorf("write cache: %w", err)
+	}
+	log.Printf("Cache updated successfully (%d apps).", len(apps))
 	return nil
 }
 
@@ -185,6 +210,14 @@ func readIpcResponse(conn net.Conn) {
 
 	// parse length (last 4 bytes of header)
 	dataLen := binary.LittleEndian.Uint32(header[4:8])
+
+	// cap allocation to avoid OOM on a malformed/garbage header.
+	// Discord IPC frames are well under 1 MB in practice.
+	const maxPayload = 1 << 20
+	if dataLen > maxPayload {
+		log.Printf("ERROR: IPC payload length %d exceeds %d-byte cap, dropping", dataLen, maxPayload)
+		return
+	}
 
 	// read the payload
 	payload := make([]byte, dataLen)
@@ -225,8 +258,24 @@ func normalizeGameName(input string) string {
 	return nonAlphanumeric.ReplaceAllString(strings.ToLower(s), "")
 }
 
+// returns true if the Steam folder name is in the ignore list or matches a known infrastructure prefix
+func isIgnoredGame(name string) bool {
+	if ignoredGames[name] {
+		return true
+	}
+	for _, prefix := range ignoredGamePrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // find Discord client ID of provided game
 func resolveClientID(name string) string {
+	if id, ok := manualMappings[name]; ok {
+		return id
+	}
 	norm := normalizeGameName(name)
 	if id, ok := nameToID[norm]; ok {
 		return id
@@ -290,6 +339,16 @@ func scanCmdline(pidStr string) string {
 	}
 
 	args := bytes.Split(data, []byte{0})
+
+	// also check ignoredProcesses against argv[0] basename — handles the case
+	// where /proc/<pid>/exe readlink failed in scanProcesses and the wrapper
+	// process's cmdline still carries the wrapped game's path.
+	if len(args) > 0 && len(args[0]) > 0 {
+		if ignoredProcesses[filepath.Base(string(args[0]))] {
+			return ""
+		}
+	}
+
 	for _, arg := range args {
 		if len(arg) == 0 {
 			continue
@@ -297,7 +356,7 @@ func scanCmdline(pidStr string) string {
 		path := string(arg)
 		name := extractSteamGameName(path)
 
-		if name != "" && !ignoredGames[name] {
+		if name != "" && !isIgnoredGame(name) {
 			return name
 		}
 	}
@@ -337,7 +396,7 @@ func scanProcesses() (string, int) {
 			gameName = scanCmdline(pidStr)
 		}
 
-		if gameName != "" && !ignoredGames[gameName] {
+		if gameName != "" && !isIgnoredGame(gameName) {
 			pid, _ := strconv.Atoi(pidStr)
 			return gameName, pid
 		}
@@ -408,9 +467,7 @@ func setActivity(conn net.Conn, appName string, pid int, osRelease string) error
 }
 
 // load configuration from JSON
-func loadConfig() {
-	configFile, _ := getPaths()
-
+func loadConfig(configFile string) {
 	file, err := os.ReadFile(configFile)
 	if err != nil {
 		log.Println("No config.json found. Using defaults.")
@@ -441,6 +498,12 @@ func loadConfig() {
 	}
 	log.Printf("Loaded %d ignored process entries.", len(ignoredProcesses))
 
+	// load manual game name -> Discord client ID mappings
+	for name, id := range cfg.ManualMappings {
+		manualMappings[name] = id
+	}
+	log.Printf("Loaded %d manual game mappings.", len(manualMappings))
+
 	// set Discord API version in URL
 	if cfg.DiscordApiVersion > 0 {
 		discordApiUrl = fmt.Sprintf("https://discord.com/api/v%d/applications/detectable", cfg.DiscordApiVersion)
@@ -454,28 +517,29 @@ func loadConfig() {
 	log.Printf("Game cache TTL set to %v.", gameCacheTTL)
 }
 
-// get path tuple of (config_file, cache_file)
-// looks at current working directory, then XDG system paths
-var cachedPaths [2]string
+// Paths is the resolved location of the config file and game cache file.
+type Paths struct {
+	Config string
+	Cache  string
+}
 
-func getPaths() (string, string) {
-	if cachedPaths[0] != "" {
-		return cachedPaths[0], cachedPaths[1]
-	}
+// resolvePaths picks development paths when run from the repo (config.json
+// in cwd) and otherwise falls back to the user's standard config/cache dirs
+// (~/.config and ~/.cache on Linux, honoring XDG_* if set).
+func resolvePaths() Paths {
+	const appName = "discord-rpc-bridge"
 
-	appName := "discord-rpc-bridge"
-
-	// check for local config
 	cwd, _ := os.Getwd()
 	localConfig := filepath.Join(cwd, "config.json")
 	if _, err := os.Stat(localConfig); err == nil {
 		log.Println("MODE: Development (repo paths)")
-		cachedPaths = [2]string{localConfig, filepath.Join(cwd, "data", "games.json")}
-		return cachedPaths[0], cachedPaths[1]
+		return Paths{
+			Config: localConfig,
+			Cache:  filepath.Join(cwd, "data", "games.json"),
+		}
 	}
 
-	// fallback to XDG
-	log.Println("MODE: Deployed (XDG paths)")
+	log.Println("MODE: Deployed (user config/cache dirs)")
 
 	configDir, _ := os.UserConfigDir()
 	appConfigDir := filepath.Join(configDir, appName)
@@ -485,27 +549,41 @@ func getPaths() (string, string) {
 	appCacheDir := filepath.Join(cacheDir, appName)
 	_ = os.MkdirAll(appCacheDir, 0755)
 
-	cachedPaths = [2]string{filepath.Join(appConfigDir, "config.json"), filepath.Join(appCacheDir, "games.json")}
-	return cachedPaths[0], cachedPaths[1]
+	return Paths{
+		Config: filepath.Join(appConfigDir, "config.json"),
+		Cache:  filepath.Join(appCacheDir, "games.json"),
+	}
 }
 
 func main() {
+	versionFlag := flag.Bool("version", false, "print version and exit")
+	flag.Parse()
+	if *versionFlag {
+		fmt.Println(version)
+		return
+	}
+
 	log.Printf("Starting discord-rpc-bridge %s...", version)
 
-	loadConfig()
+	paths := resolvePaths()
+	loadConfig(paths.Config)
 
-	if err := loadGameData(); err != nil {
+	if err := loadGameData(paths.Cache); err != nil {
 		log.Fatalf("Failed to load database: %v", err)
 	}
 	osRelease := readOSRelease()
 	log.Printf("Detected OS release: %s", osRelease)
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	ticker := time.NewTicker(scanInterval)
-	var socketPath, _ = findDiscordSocket()
+	defer ticker.Stop()
+
+	socketPath, _ := findDiscordSocket()
 	var currentClientID string
 	var ipcConn net.Conn
 
-	// run immediately, then on schedule
 	log.Printf("Starting process scanner with interval of %v second(s)", scanInterval.Seconds())
 	scan := func() {
 		gameName, pid := scanProcesses()
@@ -541,7 +619,11 @@ func main() {
 					currentClientID = targetClientID
 					log.Printf("Connected to game %s (ID: %s)", gameName, targetClientID)
 				} else {
-					log.Printf("Connection failed: %v", err)
+					// clear socketPath so next tick re-probes; covers Discord
+					// being closed/relaunched in a different flavor
+					// (native ↔ Flatpak ↔ Snap) at a new socket path.
+					log.Printf("Connection failed: %v. Re-probing socket next tick.", err)
+					socketPath = ""
 					return
 				}
 			}
@@ -554,12 +636,26 @@ func main() {
 				ipcConn.Close()
 				ipcConn = nil
 				currentClientID = ""
+				socketPath = ""
 			}
 		}
 	}
 
 	scan()
-	for range ticker.C {
-		scan()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("Shutting down. Clearing Discord activity...")
+			if ipcConn != nil {
+				// best-effort: ask Discord to drop our activity, then close.
+				// without this, Discord shows the stale "Playing X" until it
+				// notices the broken pipe (can take a while).
+				_ = setActivity(ipcConn, "", 0, osRelease)
+				ipcConn.Close()
+			}
+			return
+		case <-ticker.C:
+			scan()
+		}
 	}
 }

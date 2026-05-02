@@ -33,7 +33,7 @@ make install
 
 ### Updating
 
-Re-run the install script. This will stop the service, update the binary, and overwrite the config with defaults.
+Re-run the install script. This stops the service and updates the binary; an existing `config.json` is preserved (so your `manual_mappings` and other customizations survive).
 
 ```sh
 systemctl --user stop discord-rpc-bridge
@@ -67,18 +67,11 @@ make uninstall
   // how often to invalidate the Discord game list cache
   "game_cache_ttl_days": 7,
 
-  // steamapps/common folder names to ignore during game detection
+  // extra steamapps/common folder names to ignore during game detection.
+  // any name starting with "SteamLinuxRuntime" or "Proton" is auto-ignored,
+  // so you only need to list other false-positive folders here.
   "ignored_games": [
-    "SteamLinuxRuntime_soldier",
-    "SteamLinuxRuntime_sniper",
-    "SteamLinuxRuntime",
     "SteamControllerConfigs",
-    "Proton - Experimental",
-    "Proton Experimental",
-    "Proton 7.0",
-    "Proton 8.0",
-    "Proton 9.0",
-    "Proton Hotfix",
     "shader_compiler"
   ],
 
@@ -90,9 +83,42 @@ make uninstall
     "reaper",
     "steam-launch-wrapper",
     "pressure-vessel-wrap"
-  ]
+  ],
+
+  // override the Discord client ID lookup for a given Steam folder name.
+  // useful when Discord's detectable name doesn't match the folder name
+  // (e.g. "Yakuza Kiwami 3 & Dark Ties" vs Steam's "YakuzaKiwami3").
+  // keys are exact Steam folder names; values are Discord application IDs.
+  "manual_mappings": {
+    "YakuzaKiwami3": "1464821189921996860"
+  }
 }
 ```
+
+### Manual mappings
+
+When automatic name matching fails (Discord's detectable name differs from the Steam folder), add an entry to `manual_mappings`.
+The cache at `~/.cache/discord-rpc-bridge/games.json` already has every detectable game, so you don't need to re-download anything.
+
+```sh
+# 1. find the Steam folder name the bridge sees for your running game.
+#    (a "(ID: 000000000000000000)" line means automatic lookup failed and
+#    you need a manual mapping for that folder.)
+journalctl --user -u discord-rpc-bridge | grep -oP 'Connected to game \K.+' | sort -u
+
+# 2. search Discord's detectable list for matching client IDs
+#    (case-insensitive substring search against the cached game list)
+jq '.[] | select(.name | test("yakuza kiwami"; "i")) | {id, name}' \
+    ~/.cache/discord-rpc-bridge/games.json
+
+# 3. one-shot: print a ready-to-paste manual_mappings entry. pass the
+#    Steam folder name and a unique Discord-name fragment as --arg values.
+jq --arg s "YakuzaKiwami3" --arg q "yakuza kiwami 3" \
+    '[.[] | select(.name | test($q; "i"))] | map({($s): .id}) | add' \
+    ~/.cache/discord-rpc-bridge/games.json
+```
+
+After editing `config.json`, restart the service: `systemctl --user restart discord-rpc-bridge`.
 
 ## Discord Detectable Applications JSON
 

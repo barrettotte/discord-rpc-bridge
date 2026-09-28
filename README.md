@@ -3,15 +3,16 @@
 A bridge to update Discord Rich Presence status with your current Steam game on Linux.
 
 This works with both native and Flatpak Steam, and supports native, Flatpak, and Snap Discord.
-It scans `/proc` on an interval to detect running Steam games (native and Proton) and sets your Discord activity status via IPC.
+It scans `/proc` on an interval to detect running games (native, Proton, and non-Steam Wine games such as Battle.net titles) and sets your Discord activity status via IPC.
 
 ![assets/balatro-status.png](assets/balatro-status.png)
 
 ## Limitations
 
 - Linux only, systemd only
-- Supports both native and Proton games. Game detection works by matching `steamapps/common` in process paths.
-- Only detects Steam games. Could potentially scan for other processes (KiCad, VSCode, Neovim, etc.)
+- Supports both native and Proton games. Steam game detection works by matching `steamapps/common` in process paths.
+- Non-Steam Wine/Proton games (Battle.net, Lutris, Heroic, plain Wine) are detected by matching the `.exe` in the process command line against the executable names in Discord's detectable list.
+- Only detects games. Could potentially scan for other processes (KiCad, VSCode, Neovim, etc.)
 - Only tracks one game at a time (first match in `/proc`).
 - Activity status shows your distro name instead of game-specific rich presence assets.
 

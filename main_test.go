@@ -123,3 +123,68 @@ func TestVersionIsSet(t *testing.T) {
 		t.Error("version should not be empty")
 	}
 }
+
+func TestMatchWindowsExecutable(t *testing.T) {
+	populateMap([]DetectableApp{
+		{ID: "356875762940379136", Name: "World of Warcraft", Executables: []Executable{
+			{Name: "_retail_/wow.exe", OS: "win32"},
+			{Name: "world of warcraft.app", OS: "darwin"},
+		}},
+		{ID: "1553234742529364018", Name: "World of Warcraft: Forever", Executables: []Executable{
+			{Name: "wowb.exe", OS: "win32"},
+		}},
+		{ID: "111111111111111111", Name: "Black Souls", Executables: []Executable{
+			{Name: "black souls/game.exe", OS: "win32"},
+		}},
+	})
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			"battle.net windows path",
+			`C:\Program Files (x86)\World of Warcraft\_classic_beta_\WowB.exe`,
+			"World of Warcraft: Forever",
+		},
+		{
+			"suffix with directory component",
+			`C:\Program Files (x86)\World of Warcraft\_retail_\Wow.exe`,
+			"World of Warcraft",
+		},
+		{
+			"directory component must match",
+			`C:\Games\Something\_ptr_\Wow.exe`,
+			"",
+		},
+		{
+			"generic basename needs its directory",
+			`Z:\home\user\Games\black souls\Game.exe`,
+			"Black Souls",
+		},
+		{
+			"generic basename alone does not match",
+			`Z:\home\user\Games\Unrelated\Game.exe`,
+			"",
+		},
+		{
+			"darwin executables are not indexed",
+			"/Applications/World of Warcraft.app",
+			"",
+		},
+		{
+			"not an executable",
+			"-launcherlogin",
+			"",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchWindowsExecutable(tt.input)
+			if got != tt.want {
+				t.Errorf("matchWindowsExecutable(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

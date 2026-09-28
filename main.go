@@ -46,6 +46,7 @@ var (
 	}
 	manualMappings    = map[string]string{}
 	nameToID          = make(map[string]string)
+	exeIndex          = make(map[string][]exeMatch)
 	nonAlphanumeric   = regexp.MustCompile(`[^a-z0-9]`)
 	httpClient        = &http.Client{Timeout: 30 * time.Second}
 	accentTransformer = transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
@@ -63,6 +64,14 @@ type Config struct {
 type Executable struct {
 	Name string `json:"name"`
 	OS   string `json:"os"`
+}
+
+// a win32 executable entry from Discord's game list. Discord matches on a path
+// suffix rather than a bare filename (ex: "_retail_/wow.exe", "black souls/game.exe"),
+// so the suffix is kept and checked at match time.
+type exeMatch struct {
+	suffix   string // lowercase, forward slashes
+	gameName string
 }
 
 type DetectableApp struct {
@@ -100,12 +109,25 @@ type DiscordRpcPayload struct {
 	Args  interface{} `json:"args"`
 }
 
-// populate lookup for game client ID
+// populate lookup for game client ID, plus the Windows executable index used to
+// detect games that run outside Steam (Battle.net, Lutris, Heroic, plain Wine)
 func populateMap(apps []DetectableApp) {
 	for _, app := range apps {
 		nameToID[normalizeGameName(app.Name)] = app.ID
+
+		for _, exe := range app.Executables {
+			if exe.OS != "win32" {
+				continue
+			}
+			suffix := strings.ToLower(strings.ReplaceAll(exe.Name, "\\", "/"))
+			base := suffix[strings.LastIndex(suffix, "/")+1:]
+			if base == "" {
+				continue
+			}
+			exeIndex[base] = append(exeIndex[base], exeMatch{suffix: suffix, gameName: app.Name})
+		}
 	}
-	log.Printf("Indexed %d known games.", len(nameToID))
+	log.Printf("Indexed %d known games and %d Windows executable names.", len(nameToID), len(exeIndex))
 }
 
 // load game JSON from cache or build cache from Discord API call
@@ -330,7 +352,23 @@ func extractSteamGameName(fullPath string) string {
 	return ""
 }
 
-// try to find the game name from the process's cmdline args (for proton games)
+// match a Windows executable path from a cmdline against Discord's game list.
+// returns the Discord game name, or "" if the path isn't a known game executable
+func matchWindowsExecutable(path string) string {
+	p := strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
+	if !strings.HasSuffix(p, ".exe") {
+		return ""
+	}
+
+	for _, m := range exeIndex[p[strings.LastIndex(p, "/")+1:]] {
+		if p == m.suffix || strings.HasSuffix(p, "/"+m.suffix) {
+			return m.gameName
+		}
+	}
+	return ""
+}
+
+// try to find the game name from the process's cmdline args (for Proton/Wine games)
 func scanCmdline(pidStr string) string {
 	// /proc/<pid>/cmdline args separated by null bytes (\0)
 	data, err := os.ReadFile(filepath.Join("/proc", pidStr, "cmdline"))
@@ -355,6 +393,19 @@ func scanCmdline(pidStr string) string {
 		}
 		path := string(arg)
 		name := extractSteamGameName(path)
+
+		if name != "" && !isIgnoredGame(name) {
+			return name
+		}
+	}
+
+	// fallback for non-Steam Windows games: the cmdline has no steamapps path,
+	// so match the .exe itself against Discord's executable list
+	for _, arg := range args {
+		if len(arg) == 0 {
+			continue
+		}
+		name := matchWindowsExecutable(string(arg))
 
 		if name != "" && !isIgnoredGame(name) {
 			return name

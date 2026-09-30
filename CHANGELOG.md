@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Detect non-Steam Wine/Proton games (Battle.net, Lutris, Heroic, plain Wine) by matching the `.exe` in a process's command line against the executable names in Discord's detectable list — previously only paths containing `steamapps/common` were recognized, so World of Warcraft and other launcher-installed games were missed. Matching follows Discord's own path-suffix rule, so an entry like `_retail_/wow.exe` won't match an unrelated `wow.exe`. Steam path matching still takes precedence.
+
 ## 0.1.2
 
 - New `manual_mappings` config option to override Discord client ID lookup for games whose Steam folder name doesn't match Discord's detectable name (e.g. Steam's `YakuzaKiwami3` vs Discord's `Yakuza Kiwami 3 & Dark Ties`)
